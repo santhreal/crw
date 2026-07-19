@@ -345,10 +345,7 @@ mod tests {
         assert!(!chunks.is_empty());
         // Each chunk should not exceed max_chars significantly
         for chunk in &chunks {
-            assert!(
-                chunk.chars().count() <= 60,
-                "Chunk too long: {chunk}"
-            );
+            assert!(chunk.chars().count() <= 60, "Chunk too long: {chunk}");
         }
     }
 
@@ -434,6 +431,7 @@ mod tests {
         assert!(chunks.len() >= 2);
         assert!(chunks.iter().all(|chunk| chunk.chars().count() <= 16));
     }
+
     #[test]
     fn sentence_max_chars_packs_cjk_by_unicode_scalars() {
         let text = "你好. 世界.";
