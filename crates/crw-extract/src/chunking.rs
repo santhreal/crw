@@ -93,7 +93,7 @@ fn chunk_by_sentence(text: &str, max_chars: Option<usize>) -> Vec<String> {
 
         if current.is_empty() {
             current.push_str(sentence);
-        } else if current.len() + sentence.len() + 1 < max {
+        } else if current.chars().count() + sentence.chars().count() + 1 < max {
             current.push(' ');
             current.push_str(sentence);
         } else {
@@ -108,7 +108,7 @@ fn chunk_by_sentence(text: &str, max_chars: Option<usize>) -> Vec<String> {
     // Merge very short trailing chunks into the previous one.
     let mut merged: Vec<String> = Vec::new();
     for chunk in chunks {
-        if chunk.len() < min_merge && !merged.is_empty() {
+        if chunk.chars().count() < min_merge && !merged.is_empty() {
             let last = merged.last_mut().unwrap();
             last.push(' ');
             last.push_str(&chunk);
@@ -307,11 +307,11 @@ fn merge_tiny_chunks(chunks: Vec<String>, min_chars: usize) -> Vec<String> {
         if !carry.is_empty() {
             carry.push_str("\n\n");
             carry.push_str(&chunk);
-            if carry.len() >= min_chars {
+            if carry.chars().count() >= min_chars {
                 merged.push(carry);
                 carry = String::new();
             }
-        } else if chunk.trim().len() < min_chars {
+        } else if chunk.trim().chars().count() < min_chars {
             carry = chunk;
         } else {
             merged.push(chunk);
