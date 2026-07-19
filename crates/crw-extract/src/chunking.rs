@@ -155,53 +155,53 @@ fn post_process_chunks(chunks: Vec<String>, options: ChunkOptions) -> Vec<String
 
 fn split_long_chunk(chunk: &str, max_chars: usize, overlap_chars: usize) -> Vec<String> {
     let text = chunk.trim();
-    if text.is_empty() || text.len() <= max_chars {
-        return if text.is_empty() {
-            Vec::new()
-        } else {
-            vec![text.to_string()]
-        };
+    if text.is_empty() {
+        return Vec::new();
+    }
+    // maxChars/overlapChars are Unicode scalars (docs/recipe-rag), not UTF-8 bytes.
+    let char_count = text.chars().count();
+    if char_count <= max_chars {
+        return vec![text.to_string()];
     }
 
+    let starts: Vec<usize> = text
+        .char_indices()
+        .map(|(i, _)| i)
+        .chain(std::iter::once(text.len()))
+        .collect();
     let mut result = Vec::new();
-    let mut start = 0;
     let overlap_chars = overlap_chars.min(max_chars.saturating_sub(1));
+    let mut start = 0usize;
 
-    while start < text.len() {
-        while start < text.len() && !text.is_char_boundary(start) {
-            start += 1;
-        }
-
-        let remaining = &text[start..];
-        if remaining.len() <= max_chars {
-            result.push(remaining.trim().to_string());
+    while start < char_count {
+        let remaining = char_count - start;
+        if remaining <= max_chars {
+            let segment = text[starts[start]..].trim();
+            if !segment.is_empty() {
+                result.push(segment.to_string());
+            }
             break;
         }
 
         let mut end = start + max_chars;
-        while end > start && !text.is_char_boundary(end) {
-            end -= 1;
+        let window = &text[starts[start]..starts[end]];
+        if let Some(relative) = window.rfind(|c: char| c.is_whitespace()) {
+            let before = window[..relative].chars().count();
+            if before > max_chars / 2 {
+                end = start + before;
+            }
         }
 
-        if let Some(relative) = text[start..end].rfind(|c: char| c.is_whitespace())
-            && relative > max_chars / 2
-        {
-            end = start + relative;
-        }
-
-        let segment = text[start..end].trim();
+        let segment = text[starts[start]..starts[end]].trim();
         if !segment.is_empty() {
             result.push(segment.to_string());
         }
 
-        if end >= text.len() {
+        if end >= char_count {
             break;
         }
 
-        let step = end
-            .saturating_sub(start)
-            .saturating_sub(overlap_chars)
-            .max(1);
+        let step = (end - start).saturating_sub(overlap_chars).max(1);
         start += step;
     }
 
