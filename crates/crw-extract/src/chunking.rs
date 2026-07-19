@@ -346,7 +346,10 @@ mod tests {
         assert!(!chunks.is_empty());
         // Each chunk should not exceed max_chars significantly
         for chunk in &chunks {
-            assert!(chunk.len() <= 60, "Chunk too long: {chunk}");
+            assert!(
+                chunk.chars().count() <= 60,
+                "Chunk too long: {chunk}"
+            );
         }
     }
 
@@ -430,6 +433,71 @@ mod tests {
         );
 
         assert!(chunks.len() >= 2);
-        assert!(chunks.iter().all(|chunk| chunk.len() <= 16));
+        assert!(chunks.iter().all(|chunk| chunk.chars().count() <= 16));
+    }
+
+    /// `maxChars` is a Unicode scalar cap. A 20-char CJK string is 60 UTF-8
+    /// bytes, so a byte-based split with `maxChars: 20` over-fragments it.
+    #[test]
+    fn max_chars_counts_unicode_scalars_not_utf8_bytes() {
+        let text: String = "漢".repeat(20);
+        assert_eq!(text.chars().count(), 20);
+        assert_eq!(text.len(), 60);
+
+        let chunks = chunk_text(
+            &text,
+            &ChunkStrategy::Regex {
+                pattern: r"\n\n".to_string(),
+                max_chars: Some(20),
+                overlap_chars: Some(0),
+                dedupe: Some(false),
+            },
+        );
+
+        assert_eq!(chunks, vec![text.clone()]);
+        assert_eq!(chunks[0].chars().count(), 20);
+        assert_eq!(chunks[0].len(), 60);
+    }
+
+    #[test]
+    fn max_chars_splits_multibyte_text_on_scalar_budget() {
+        let text: String = "漢".repeat(25);
+        let chunks = chunk_text(
+            &text,
+            &ChunkStrategy::Regex {
+                pattern: r"\n\n".to_string(),
+                max_chars: Some(10),
+                overlap_chars: Some(0),
+                dedupe: Some(false),
+            },
+        );
+
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks[0], "漢".repeat(10));
+        assert_eq!(chunks[1], "漢".repeat(10));
+        assert_eq!(chunks[2], "漢".repeat(5));
+        assert!(chunks.iter().all(|c| c.chars().count() <= 10));
+    }
+
+    #[test]
+    fn overlap_chars_counts_unicode_scalars() {
+        let text = "あいうえおかきくけこさしすせそ".to_string();
+        assert_eq!(text.chars().count(), 15);
+
+        let chunks = chunk_text(
+            &text,
+            &ChunkStrategy::Regex {
+                pattern: r"\n\n".to_string(),
+                max_chars: Some(10),
+                overlap_chars: Some(3),
+                dedupe: Some(false),
+            },
+        );
+
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0], "あいうえおかきくけこ");
+        assert_eq!(chunks[1], "くけこさしすせそ");
+        assert_eq!(chunks[0].chars().count(), 10);
+        assert_eq!(chunks[1].chars().count(), 8);
     }
 }
