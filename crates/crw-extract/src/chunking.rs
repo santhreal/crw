@@ -158,7 +158,6 @@ fn split_long_chunk(chunk: &str, max_chars: usize, overlap_chars: usize) -> Vec<
     if text.is_empty() {
         return Vec::new();
     }
-    // maxChars/overlapChars are Unicode scalars (docs/recipe-rag), not UTF-8 bytes.
     let char_count = text.chars().count();
     if char_count <= max_chars {
         return vec![text.to_string()];
@@ -440,8 +439,6 @@ mod tests {
     /// bytes, so a byte-based split with `maxChars: 20` over-fragments it.
     #[test]
     fn sentence_max_chars_packs_cjk_by_unicode_scalars() {
-        // Boundary regex needs ". " (punct + whitespace). Each clause is 3
-        // scalars / 7 UTF-8 bytes; scalar budget 10 packs both, byte budget would not.
         let text = "你好. 世界.";
         let chunks = chunk_text(
             text,
