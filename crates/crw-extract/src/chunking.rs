@@ -434,9 +434,6 @@ mod tests {
         assert!(chunks.len() >= 2);
         assert!(chunks.iter().all(|chunk| chunk.chars().count() <= 16));
     }
-
-    /// `maxChars` is a Unicode scalar cap. A 20-char CJK string is 60 UTF-8
-    /// bytes, so a byte-based split with `maxChars: 20` over-fragments it.
     #[test]
     fn sentence_max_chars_packs_cjk_by_unicode_scalars() {
         let text = "你好. 世界.";
