@@ -439,6 +439,24 @@ mod tests {
     /// `maxChars` is a Unicode scalar cap. A 20-char CJK string is 60 UTF-8
     /// bytes, so a byte-based split with `maxChars: 20` over-fragments it.
     #[test]
+    fn sentence_max_chars_packs_cjk_by_unicode_scalars() {
+        // Boundary regex needs ". " (punct + whitespace). Each clause is 3
+        // scalars / 7 UTF-8 bytes; scalar budget 10 packs both, byte budget would not.
+        let text = "你好. 世界.";
+        let chunks = chunk_text(
+            text,
+            &ChunkStrategy::Sentence {
+                max_chars: Some(10),
+                overlap_chars: Some(0),
+                dedupe: Some(false),
+            },
+        );
+        assert_eq!(chunks, vec!["你好. 世界.".to_string()]);
+        assert_eq!(chunks[0].chars().count(), 7);
+        assert_eq!(chunks[0].len(), 15);
+    }
+
+    #[test]
     fn max_chars_counts_unicode_scalars_not_utf8_bytes() {
         let text: String = "漢".repeat(20);
         assert_eq!(text.chars().count(), 20);
