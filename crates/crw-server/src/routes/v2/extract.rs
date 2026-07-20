@@ -12,7 +12,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crw_core::error::CrwError;
-use crw_core::types::{OutputFormat, ScrapeRequest};
+use crw_core::types::{ExtractOptions, OutputFormat, ScrapeRequest};
 
 use super::adapters::system_time_rfc3339;
 use crate::error::AppError;
@@ -29,6 +29,22 @@ pub struct V2ExtractRequest {
     pub schema: Option<Value>,
     #[serde(default)]
     pub system_prompt: Option<String>,
+}
+
+/// Map a v2 extract body onto the engine scrape template. The free-text
+/// `prompt` must ride `extract.prompt` — that is the slot structured JSON
+/// extraction reads (see `crw_crawl::single`). Putting it on `summary_prompt`
+/// silently drops the instruction on the json path.
+fn scrape_template_for_v2_extract(req: &V2ExtractRequest) -> ScrapeRequest {
+    ScrapeRequest {
+        formats: vec![OutputFormat::Json],
+        json_schema: req.schema.clone(),
+        extract: req.prompt.as_ref().map(|prompt| ExtractOptions {
+            schema: None,
+            prompt: Some(prompt.clone()),
+        }),
+        ..Default::default()
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -64,14 +80,7 @@ pub async fn start_extract(
         valid.push(u.clone());
     }
 
-    let template = ScrapeRequest {
-        formats: vec![OutputFormat::Json],
-        json_schema: req.schema.clone(),
-        // A free-text extraction prompt (no schema) rides the summary_prompt slot,
-        // which the extractor folds into the structured-extraction instruction.
-        summary_prompt: req.prompt.clone(),
-        ..Default::default()
-    };
+    let template = scrape_template_for_v2_extract(&req);
 
     // v2 early-returns on the first bad URL (above), so every entry is valid.
     let entries = valid
@@ -124,4 +133,51 @@ pub async fn get_extract(
         credits_used: rec.credits_used,
         tokens_used: rec.tokens_used,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn v2_extract_prompt_rides_extract_prompt_not_summary_prompt() {
+        let req = V2ExtractRequest {
+            urls: vec!["https://example.com".into()],
+            prompt: Some("Extract the product name and price".into()),
+            schema: Some(json!({
+                "type": "object",
+                "properties": { "name": { "type": "string" } }
+            })),
+            system_prompt: None,
+        };
+        let template = scrape_template_for_v2_extract(&req);
+        assert_eq!(
+            template.extract.as_ref().and_then(|e| e.prompt.as_deref()),
+            Some("Extract the product name and price")
+        );
+        assert!(
+            template.summary_prompt.is_none(),
+            "summary_prompt must stay empty; json extraction ignores it"
+        );
+        assert_eq!(template.json_schema, req.schema);
+        assert_eq!(template.formats, vec![OutputFormat::Json]);
+    }
+
+    #[test]
+    fn v2_extract_prompt_only_still_wires_extract_prompt() {
+        let req = V2ExtractRequest {
+            urls: vec!["https://example.com".into()],
+            prompt: Some("List every heading".into()),
+            schema: None,
+            system_prompt: None,
+        };
+        let template = scrape_template_for_v2_extract(&req);
+        assert_eq!(
+            template.extract.as_ref().and_then(|e| e.prompt.as_deref()),
+            Some("List every heading")
+        );
+        assert!(template.json_schema.is_none());
+        assert!(template.summary_prompt.is_none());
+    }
 }
