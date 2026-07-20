@@ -2769,9 +2769,13 @@ impl FallbackRenderer {
 /// where a renderer returned HTML but failed to execute JavaScript.
 fn html_body_text_len(html: &str) -> usize {
     // Extract body content if present, otherwise use entire HTML.
-    let body = if let Some(start) = html.find("<body") {
-        let start = html[start..].find('>').map(|i| start + i + 1).unwrap_or(0);
-        let end = html.find("</body>").unwrap_or(html.len());
+    // Seek `</body>` only after the open tag — an earlier match panics the slice.
+    let body = if let Some(open) = html.find("<body") {
+        let start = html[open..].find('>').map(|i| open + i + 1).unwrap_or(0);
+        let end = html[start..]
+            .find("</body>")
+            .map(|i| start + i)
+            .unwrap_or(html.len());
         &html[start..end]
     } else {
         html
@@ -4318,6 +4322,23 @@ mod tests {
                 reason: FailoverErrorKind::AntibotBlock,
             }),
             "chrome must escalate straight to chrome_proxy, skipping lightpanda"
+        );
+    }
+
+    #[test]
+    fn html_body_text_len_tolerates_early_close_in_head() {
+        let html = concat!(
+            r#"<html><head><script>var x="</body>"</script></head>"#,
+            r#"<body>hello world</body>"#,
+        );
+        assert_eq!(html_body_text_len(html), 11);
+    }
+
+    #[test]
+    fn html_body_text_len_counts_normal_body() {
+        assert_eq!(
+            html_body_text_len("<html><body>abc def</body></html>"),
+            7
         );
     }
 }
