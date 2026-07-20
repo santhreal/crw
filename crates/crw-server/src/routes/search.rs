@@ -1003,7 +1003,7 @@ fn build_byok_search_llm_config(
 }
 
 fn validate_request(req: &SearchRequest, max_limit: u32) -> Result<(), CrwError> {
-    let len = req.query.chars().count();
+    let len = req.query.trim().chars().count();
     if len == 0 {
         return Err(CrwError::InvalidRequest("query is required".into()));
     }
@@ -1385,6 +1385,19 @@ mod tests {
             validate_request(&req(""), 20),
             Err(CrwError::InvalidRequest(_))
         ));
+    }
+
+    #[test]
+    fn validate_rejects_whitespace_only_query() {
+        for q in ["   ", "\t\n", " \t "] {
+            assert!(
+                matches!(
+                    validate_request(&req(q), 20),
+                    Err(CrwError::InvalidRequest(_))
+                ),
+                "expected reject for {q:?}"
+            );
+        }
     }
 
     #[test]
