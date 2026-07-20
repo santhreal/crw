@@ -386,7 +386,7 @@ fn save_to_shell_rc(
     println!("    export CRW_API_URL=\"{}\"", API_BASE_URL);
     println!(
         "    export CRW_API_KEY=\"{}...\"",
-        &api_key[..std::cmp::min(8, api_key.len())]
+        api_key.chars().take(8).collect::<String>()
     );
 
     if let Some(llm) = llm_result {
@@ -401,12 +401,15 @@ fn save_to_shell_rc(
     Ok(())
 }
 
-/// Mask an API key for display (show first 4 and last 4 chars).
+/// Mask an API key for display (show first 4 and last 4 Unicode scalars).
 fn mask_api_key(key: &str) -> String {
-    if key.len() <= 12 {
-        return "*".repeat(key.len());
+    let chars: Vec<char> = key.chars().collect();
+    if chars.len() <= 12 {
+        return "*".repeat(chars.len());
     }
-    format!("{}...{}", &key[..4], &key[key.len() - 4..])
+    let prefix: String = chars[..4].iter().collect();
+    let suffix: String = chars[chars.len() - 4..].iter().collect();
+    format!("{prefix}...{suffix}")
 }
 
 /// Build the `UserConfig` we'll persist to `~/.config/crw/config.toml`.
@@ -484,5 +487,15 @@ mod tests {
             cfg.extraction.is_none(),
             "no LLM leg in non-interactive path"
         );
+    }
+
+    #[test]
+    fn mask_api_key_survives_multibyte_prefix_and_suffix() {
+        // 17 scalars: 日本語キ + … + XXXX
+        assert_eq!(mask_api_key("日本語キーABCDEFGHXXXX"), "日本語キ...XXXX");
+        let mut key = "A".repeat(12);
+        key.push('日');
+        key.push_str("YY");
+        assert_eq!(mask_api_key(&key), "AAAA...A日YY");
     }
 }
