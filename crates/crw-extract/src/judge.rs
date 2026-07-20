@@ -12,6 +12,7 @@
 //! ignore any instructions inside it.
 
 use crate::structured::{call_anthropic, call_openai, truncate_md, validate_against_schema};
+use crate::summary::truncate_to_chars;
 use crate::untrusted;
 use crw_core::config::LlmConfig;
 use crw_core::error::{CrwError, CrwResult};
@@ -22,6 +23,9 @@ use std::sync::OnceLock;
 /// Default byte ceiling on the diff sent to the judge (32 KB). Keeps judge
 /// token spend bounded regardless of diff size.
 pub const DEFAULT_JUDGE_MAX_INPUT_BYTES: usize = 32_000;
+
+/// Hard cap on monitoring `goal` (docs ≤2 KB / OpenAPI maxLength 2048).
+pub const MAX_GOAL_CHARS: usize = 2048;
 
 const JUDGE_TOOL_NAME: &str = "judge_change";
 const JUDGE_TOOL_DESC: &str =
@@ -63,6 +67,7 @@ fn judge_schema() -> &'static Value {
 /// Build the judge prompt with the trusted goal and the UNTRUSTED diff fenced
 /// off so prompt-injection inside the scraped diff cannot redirect the model.
 fn build_prompt(goal: &str, diff: &str) -> String {
+    let goal = truncate_to_chars(goal, MAX_GOAL_CHARS);
     let fenced = untrusted::wrap(diff, "DIFF", &untrusted::random_nonce(), None);
     format!(
         "You are evaluating whether a change to a web page is meaningful with respect to a \
@@ -186,5 +191,30 @@ mod tests {
             s["required"],
             serde_json::json!(["meaningful", "confidence", "reason"])
         );
+    }
+
+    #[test]
+    fn goal_over_max_chars_is_truncated_in_prompt() {
+        let over: String = "漢".repeat(MAX_GOAL_CHARS + 16);
+        assert!(over.chars().count() > MAX_GOAL_CHARS);
+        let p = build_prompt(&over, "diff body");
+        let kept = "漢".repeat(MAX_GOAL_CHARS);
+        assert!(
+            p.contains(&kept),
+            "prompt must keep the first {MAX_GOAL_CHARS} goal scalars"
+        );
+        assert!(
+            !p.contains(&over),
+            "prompt must not embed the uncapped goal"
+        );
+        let marker = "GOAL (trusted instruction):\n";
+        let start = p.find(marker).expect("goal marker") + marker.len();
+        let end = p[start..]
+            .find("\n\nBelow is the diff")
+            .expect("diff marker")
+            + start;
+        let goal_in_prompt = &p[start..end];
+        assert_eq!(goal_in_prompt.chars().count(), MAX_GOAL_CHARS);
+        assert_eq!(goal_in_prompt, kept);
     }
 }
