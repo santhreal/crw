@@ -1,10 +1,10 @@
 //! Multi-source LLM answer synthesis for `/v1/search`.
 //!
-//! Takes the top-N scraped markdowns, truncates each to a per-source byte
-//! cap, and asks the model to answer the user's query using ONLY the
-//! provided sources. Citations come from structured tool-use output, not
-//! regex on `[N]` markers, so the model can't fabricate URLs that weren't
-//! in the input list.
+//! Takes the top-N scraped markdowns, truncates each to a per-source
+//! Unicode-scalar cap (`max_chars_per_source`), and asks the model to answer
+//! the user's query using ONLY the provided sources. Citations come from
+//! structured tool-use output, not regex on `[N]` markers, so the model can't
+//! fabricate URLs that weren't in the input list.
 
 use crate::llm::{self, LlmCallResult};
 use crate::summary::truncate_to_chars;
@@ -199,25 +199,14 @@ pub struct AnswerResult {
 /// One source: `(url, title, markdown)`.
 pub type Source = (String, String, String);
 
-fn truncate_on_char_boundary(s: &str, max_bytes: usize) -> &str {
-    if s.len() <= max_bytes {
-        return s;
-    }
-    let mut idx = max_bytes;
-    while idx > 0 && !s.is_char_boundary(idx) {
-        idx -= 1;
-    }
-    &s[..idx]
-}
-
 /// Worst-case separator between two kept chunks ("\n[...]\n"). Accounted
-/// conservatively so the assembled output never exceeds `cap` before the final
-/// truncate; the leftover slack is reclaimed by the partial-fill step.
+/// conservatively so the assembled output never exceeds `cap` scalars before
+/// the final truncate; leftover slack is reclaimed by the partial-fill step.
 const GAP_MARKER: &str = "\n[...]\n";
 
-/// Add whole chunk `i` to `keep` if it fits the remaining byte budget (charging
-/// the worst-case separator). Whole-chunk only; the partial tail is handled by
-/// the caller's fill step.
+/// Add whole chunk `i` to `keep` if it fits the remaining Unicode-scalar budget
+/// (charging the worst-case separator). Whole-chunk only; the partial tail is
+/// handled by the caller's fill step.
 fn try_keep_chunk(
     chunks: &[String],
     keep: &mut std::collections::BTreeSet<usize>,
@@ -228,19 +217,19 @@ fn try_keep_chunk(
     if keep.contains(&i) {
         return;
     }
-    let clen = chunks[i].len();
-    if *used + GAP_MARKER.len() + clen > cap {
+    let clen = chunks[i].chars().count();
+    if *used + GAP_MARKER.chars().count() + clen > cap {
         return;
     }
     keep.insert(i);
-    *used += GAP_MARKER.len() + clen;
+    *used += GAP_MARKER.chars().count() + clen;
 }
 
-/// Fit an over-budget source into `cap` bytes by RELEVANCE, not by position.
-/// A blind head-truncation drops the answer when it sits deep in the page (a
-/// stats table at char 12k, a fact at char 55k); scoring passages against the
-/// query and keeping the best ones recovers those. Reuses the engine's sentence
-/// chunker + BM25 ranker.
+/// Fit an over-budget source into `cap` Unicode scalars by RELEVANCE, not by
+/// position. A blind head-truncation drops the answer when it sits deep in the
+/// page (a stats table at char 12k, a fact at char 55k); scoring passages
+/// against the query and keeping the best ones recovers those. Reuses the
+/// engine's sentence chunker + BM25 ranker.
 ///
 /// Two passes, so this NEVER feeds the model less content than a plain
 /// head-truncation would (the hard "don't regress recall" invariant): first pack
@@ -251,8 +240,8 @@ fn try_keep_chunk(
 /// distant passages as one continuous span. Falls back to head-truncation if the
 /// text won't chunk.
 fn select_relevant_passages(md: &str, query: &str, cap: usize) -> String {
-    if md.len() <= cap || query.trim().is_empty() {
-        return truncate_on_char_boundary(md, cap).to_string();
+    if md.chars().count() <= cap || query.trim().is_empty() {
+        return truncate_to_chars(md, cap).to_string();
     }
     let strategy = ChunkStrategy::Sentence {
         max_chars: Some(700),
@@ -261,12 +250,12 @@ fn select_relevant_passages(md: &str, query: &str, cap: usize) -> String {
     };
     let chunks = chunking::chunk_text(md, &strategy);
     if chunks.is_empty() {
-        return truncate_on_char_boundary(md, cap).to_string();
+        return truncate_to_chars(md, cap).to_string();
     }
     let scored = filter::filter_chunks_scored(&chunks, query, &FilterMode::Bm25, chunks.len());
     let mut keep: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
     keep.insert(0); // lead chunk always kept: page lede / snippet lives here
-    let mut used = chunks[0].len();
+    let mut used = chunks[0].chars().count();
     // Priority pass: query-relevant chunks first (BM25 > 0), highest score first.
     for sc in &scored {
         if sc.score > 0.0 {
@@ -290,25 +279,26 @@ fn select_relevant_passages(md: &str, query: &str, cap: usize) -> String {
     }
     // Partial-fill: if budget remains (e.g. an unselected chunk was an unbreakable
     // blob too big to keep whole, or slack from conservative separator charging),
-    // append a byte-slice of the best remaining chunk so we never feed LESS than a
-    // head-truncation would. Prefer the highest-BM25 unselected chunk, else the
-    // first in original order.
-    if out.len() + GAP_MARKER.len() < cap {
+    // append a scalar-capped slice of the best remaining chunk so we never feed
+    // LESS than a head-truncation would. Prefer the highest-BM25 unselected chunk,
+    // else the first in original order.
+    let gap_chars = GAP_MARKER.chars().count();
+    if out.chars().count() + gap_chars < cap {
         let next = scored
             .iter()
             .map(|s| s.index)
             .chain(0..chunks.len())
             .find(|i| !keep.contains(i));
         if let Some(i) = next {
-            let room = cap - out.len() - GAP_MARKER.len();
-            let slice = truncate_on_char_boundary(&chunks[i], room);
+            let room = cap - out.chars().count() - gap_chars;
+            let slice = truncate_to_chars(&chunks[i], room);
             if !slice.is_empty() {
                 out.push_str(GAP_MARKER);
                 out.push_str(slice);
             }
         }
     }
-    truncate_on_char_boundary(&out, cap).to_string() // hard-enforce the byte cap
+    truncate_to_chars(&out, cap).to_string()
 }
 
 /// Hard server-side cap on the caller-supplied prompt addition. See
@@ -346,17 +336,17 @@ pub async fn synthesize(
     parts.push(format!("Query: {query}\n"));
     let mut any_truncated = false;
     for (idx, (url, title, md)) in sources.iter().enumerate() {
-        let was_truncated = md.len() > cap;
+        let was_truncated = md.chars().count() > cap;
         if was_truncated {
             any_truncated = true;
         }
         // Relevance-select passages when over budget (keeps deep answers a blind
         // head-cut would drop); within budget this is a no-op passthrough. Gated:
-        // off = byte-identical head-truncation.
+        // off = scalar-capped head-truncation.
         let body = if bm25_select {
             select_relevant_passages(md, query, cap)
         } else {
-            truncate_on_char_boundary(md, cap).to_string()
+            truncate_to_chars(md, cap).to_string()
         };
         let source_block = format!("Source #{idx}\nURL: {url}\nTitle: {title}\n\n{body}");
         parts.push(untrusted::wrap(&source_block, "SOURCE", &nonce, Some(idx)));
@@ -792,7 +782,7 @@ mod tests {
         let cap = 1500;
         assert!(page.len() > cap);
         let out = select_relevant_passages(&page, "Which team finished with 38 points", cap);
-        assert!(out.len() <= cap, "must respect the byte cap");
+        assert!(out.chars().count() <= cap, "must respect the scalar cap");
         assert!(
             out.contains("Leeds United"),
             "deep answer must survive relevance selection"
@@ -807,8 +797,12 @@ mod tests {
         let cap = 4000;
         assert!(page.len() > cap);
         let out = select_relevant_passages(&page, "xyzzy plugh nonexistent", cap);
-        assert!(out.len() > 2000, "budget must be filled, got {}", out.len());
-        assert!(out.len() <= cap, "must respect the byte cap");
+        assert!(
+            out.chars().count() > 2000,
+            "budget must be filled, got {}",
+            out.chars().count()
+        );
+        assert!(out.chars().count() <= cap, "must respect the scalar cap");
     }
 
     #[test]
@@ -823,11 +817,11 @@ mod tests {
         let cap = 4000;
         assert!(page.len() > cap);
         let out = select_relevant_passages(&page, "answerword", cap);
-        assert!(out.len() <= cap, "must respect the byte cap");
+        assert!(out.chars().count() <= cap, "must respect the scalar cap");
         assert!(
-            out.len() > cap - 800,
+            out.chars().count() > cap - 800,
             "budget must be ~filled, got {}",
-            out.len()
+            out.chars().count()
         );
         assert!(
             out.contains("answerword"),
@@ -845,6 +839,20 @@ mod tests {
         // no query -> plain head-truncation, never panics
         let long = "x".repeat(20_000);
         let out = select_relevant_passages(&long, "   ", 100);
-        assert_eq!(out.len(), 100);
+        assert_eq!(out.chars().count(), 100);
     }
+
+    #[test]
+    fn max_chars_per_source_counts_unicode_scalars_not_utf8_bytes() {
+        let md = "漢".repeat(100);
+        assert_eq!(md.chars().count(), 100);
+        assert_eq!(md.len(), 300);
+        let out = truncate_to_chars(&md, 100);
+        assert_eq!(out.chars().count(), 100);
+        assert_eq!(out, md);
+        let over_src = "漢".repeat(108);
+        let over = truncate_to_chars(&over_src, 100);
+        assert_eq!(over.chars().count(), 100);
+    }
+
 }
